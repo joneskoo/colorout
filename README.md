@@ -2,4 +2,4 @@
 
 Color and multiplex command output
 
-![output](https://cloud.githubusercontent.com/assets/305104/16096847/8462cfd0-3353-11e6-8ffe-7ea287a7a403.gif)
+![colorout](https://cloud.githubusercontent.com/assets/305104/16097487/b1ed7b50-3356-11e6-8cec-bbb4d7e61604.gif)
