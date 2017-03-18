@@ -54,12 +54,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for i, command := range tasks {
-		fmt.Fprintf(stderr, "%d Running: %s\n", i, command)
+		fmt.Fprintf(stderr, "%d> Running: %s\n", i, command)
 
 		go func(i int, command string) {
 			defer wg.Done()
 			if err := runCommand(ctx, i, command, stdout, stderr); err != nil {
-				fmt.Fprintf(stderr, "command failed with %v\n", err)
+				fmt.Fprintf(stderr, "%d> command failed with %v\n", i, err)
 				if *fail { // terminate other tasks on failure
 					cancel()
 				}
@@ -114,7 +114,7 @@ func (c *colorizer) Write(data []byte) (n int, err error) {
 	n = 0
 	for _, line := range lines[:len(lines)-1] {
 		n += len(line) + 1
-		_, err = colors[c.i].Fprintf(c.dst, "%d %v\n", c.i, line)
+		_, err = colors[c.i].Fprintf(c.dst, "%d> %v\n", c.i, line)
 		if err != nil {
 			return n, err
 		}
@@ -131,7 +131,7 @@ func (c *colorizer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.prev != "" {
-		_, err := colors[c.i].Fprintf(c.dst, "%d %v\n", c.i, c.prev)
+		_, err := colors[c.i].Fprintf(c.dst, "%d> %v\n", c.i, c.prev)
 		return err
 	}
 	return nil
