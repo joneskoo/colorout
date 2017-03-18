@@ -1,12 +1,13 @@
-// Copyright 2016 Joonas Kuorilehto
+// Copyright 2016-2017 Joonas Kuorilehto.
 
-// Colorout is a command line utility that colors command
-// output. Each command is executed concurrently using bash
-// shell and annotated with a different color.
+// Command colorout is a colors and multiplexes output from tasks.
+// Each task (external command) is executed concurrently using
+// command shell and output is colored with a unique color per task.
 package main
 
 import (
-	"bufio"
+	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -14,102 +15,137 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/fatih/color"
 )
 
-const shell = "bash"
-
-const (
-	colorReset   = "\x1b[0m"
-	colorRed     = "\033[31m"
-	colorGreen   = "\033[32m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorCyan    = "\033[36m"
-	colorWhite   = "\033[37m"
-)
-
-var colors = []string{
-	colorRed,
-	colorGreen,
-	colorYellow,
-	colorBlue,
-	colorMagenta,
-	colorCyan,
-	colorWhite}
-
-var mu sync.Mutex
+var colors = []*color.Color{
+	color.New(color.FgHiRed),
+	color.New(color.FgHiGreen),
+	color.New(color.FgHiYellow),
+	color.New(color.FgHiBlue),
+	color.New(color.FgHiMagenta),
+	color.New(color.FgHiCyan),
+	color.New(color.FgHiWhite),
+	color.New(color.FgRed, color.ReverseVideo),
+	color.New(color.FgGreen, color.ReverseVideo),
+	color.New(color.FgYellow, color.ReverseVideo),
+	color.New(color.FgBlue, color.ReverseVideo),
+	color.New(color.FgMagenta, color.ReverseVideo),
+	color.New(color.FgCyan, color.ReverseVideo),
+	color.New(color.FgWhite, color.ReverseVideo),
+}
 
 func main() {
-	log.SetFlags(0)
-	var wg sync.WaitGroup
-	args := os.Args[1:]
-	if len(args) > len(colors) {
-		log.Fatal("Too many commands!")
+	fail := flag.Bool("fail", false, "terminate if any task fails with error")
+	flag.Parse()
+	tasks := flag.Args()
+
+	if len(tasks) > len(colors) {
+		log.Fatal("Too many tasks!")
 	}
-	for i, command := range args {
-		wg.Add(1)
+
+	// safeWriter protects stdout and stderr for concurrent access
+	stdout := &safeWriter{W: os.Stdout}
+	stderr := &safeWriter{W: os.Stderr}
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(tasks))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for i, command := range tasks {
+		fmt.Fprintf(stderr, "%d Running: %s\n", i, command)
+
 		go func(i int, command string) {
 			defer wg.Done()
-			runCommand(i, command)
+			if err := runCommand(ctx, i, command, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "command failed with %v\n", err)
+				if *fail { // terminate other tasks on failure
+					cancel()
+				}
+			}
 		}(i, command)
 	}
 	wg.Wait()
 }
 
-func runCommand(i int, command string) {
-	out(os.Stdout, i, fmt.Sprint("Running: ", command))
-	cmd := exec.Command(shell, "-c", command)
+func runCommand(ctx context.Context, i int, command string, stdout io.Writer, stderr io.Writer) error {
+	commandLine := append(shellCommand(), command)
+	cmd := exec.CommandContext(ctx, commandLine[0], commandLine[1:]...)
 
-	// Close standard input
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	stdin.Close()
+	cmd.Stdout = colorize(stdout, i)
+	cmd.Stderr = colorize(stderr, i)
+	defer cmd.Stdout.(io.Closer).Close()
+	defer cmd.Stderr.(io.Closer).Close()
 
-	// Read standard output and error
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		log.Fatal(err)
+	if err := cmd.Start(); err != nil {
+		return err
 	}
 
-	err = cmd.Start()
-	if err != nil {
-		log.Fatal(err)
+	if err := cmd.Wait(); err != nil {
+		return err
 	}
-
-	go readOutput(os.Stdout, i, stdout)
-	go readOutput(os.Stderr, i, stderr)
-
-	err = cmd.Wait()
-	if err != nil {
-		log.Fatalf("%d Command finished with error %v", i, err)
-	}
-	out(os.Stdout, i, "Command exited successfully")
+	return nil
 }
 
-func readOutput(file *os.File, i int, r io.Reader) {
-	br := bufio.NewReader(r)
-	for {
-		line, err := br.ReadString('\n')
+func shellCommand() []string {
+	return []string{"bash", "-c"}
+}
+
+func colorize(dst io.Writer, i int) io.Writer {
+	return &colorizer{
+		dst: dst,
+		i:   i,
+	}
+}
+
+type colorizer struct {
+	dst  io.Writer
+	i    int
+	prev string
+
+	mu sync.Mutex
+}
+
+func (c *colorizer) Write(data []byte) (n int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	lines := strings.Split(c.prev+string(data), "\n")
+	n = 0
+	for _, line := range lines[:len(lines)-1] {
+		n += len(line) + 1
+		_, err = colors[c.i].Fprintf(c.dst, "%d %v\n", c.i, line)
 		if err != nil {
-			break
+			return n, err
 		}
-		out(file, i, strings.TrimRight(line, "\n"))
 	}
+	c.prev = ""
+	if n < len(data) {
+		c.prev = string(data[n:])
+	}
+	n = len(data)
+	return
 }
 
-func out(file *os.File, i int, line string) {
-	if i > len(colors) {
-		panic("Color index out of range")
+func (c *colorizer) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.prev != "" {
+		_, err := colors[c.i].Fprintf(c.dst, "%d %v\n", c.i, c.prev)
+		return err
 	}
+	return nil
+}
 
-	mu.Lock()
-	defer mu.Unlock()
-	file.WriteString(fmt.Sprintf("%s%d> %s%s\n", colors[i], i, line, colorReset))
+type safeWriter struct {
+	W io.Writer
+
+	mu sync.Mutex
+}
+
+func (s *safeWriter) Write(data []byte) (n int, err error) {
+	s.mu.Lock()
+	n, err = s.W.Write(data)
+	s.mu.Unlock()
+	return
 }
