@@ -1,6 +1,6 @@
 // Copyright 2016-2017 Joonas Kuorilehto.
 
-// Command colorout is a colors and multiplexes output from tasks.
+// Command colorout colors and multiplexes output from tasks.
 // Each task (external command) is executed concurrently using
 // command shell and output is colored with a unique color per task.
 package main
