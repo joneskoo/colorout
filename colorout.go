@@ -103,13 +103,9 @@ type colorizer struct {
 	dst  io.Writer
 	i    int
 	prev string
-
-	mu sync.Mutex
 }
 
 func (c *colorizer) Write(data []byte) (n int, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	lines := strings.Split(c.prev+string(data), "\n")
 	n = 0
 	for _, line := range lines[:len(lines)-1] {
@@ -128,8 +124,6 @@ func (c *colorizer) Write(data []byte) (n int, err error) {
 }
 
 func (c *colorizer) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.prev != "" {
 		_, err := colors[c.i].Fprintf(c.dst, "%d> %v\n", c.i, c.prev)
 		return err
