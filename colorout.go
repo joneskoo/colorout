@@ -42,25 +42,21 @@ func main() {
 	tasks := flag.Args()
 
 	if len(tasks) > len(colors) {
-		log.Fatal("Too many tasks!")
+		log.Fatalf("Too many tasks! I only know %d colors.", len(colors))
 	}
-
-	// safeWriter protects stdout and stderr for concurrent access
-	stdout := &safeWriter{W: os.Stdout}
-	stderr := &safeWriter{W: os.Stderr}
 
 	wg := &sync.WaitGroup{}
 	wg.Add(len(tasks))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for i, command := range tasks {
-		colorOut := colorize(stdout, i)
-		colorErr := colorize(stderr, i)
-		fmt.Fprintf(colorErr, "%d> Running: %s\n", i, command)
+		colorOut := colorize(os.Stdout, i)
+		colorErr := colorize(os.Stderr, i)
+		fmt.Fprintf(colorErr, "Starting %q\n", command)
 
 		go func(i int, command string) {
 			if err := runCommand(ctx, command, colorOut, colorErr); err != nil {
-				fmt.Fprintf(stderr, "%d> command failed with %v\n", i, err)
+				fmt.Fprintf(colorErr, "command failed with %v\n", err)
 				if *fail { // terminate other tasks on failure
 					cancel()
 				}
@@ -99,6 +95,9 @@ func colorize(dst io.Writer, i int) io.WriteCloser {
 	}
 }
 
+// mu protects writes to stdout and stderr
+var mu sync.Mutex
+
 type colorizer struct {
 	W      io.Writer
 	Prefix string
@@ -108,7 +107,9 @@ type colorizer struct {
 }
 
 func (c *colorizer) write(prev, line []byte) (err error) {
+	mu.Lock()
 	_, err = c.Color.Fprintf(c.W, "%s%s%s\n", c.Prefix, prev, line)
+	mu.Unlock()
 	return
 }
 
@@ -139,17 +140,4 @@ func (c *colorizer) Close() error {
 		return c.write(c.trailer, nil)
 	}
 	return nil
-}
-
-type safeWriter struct {
-	W io.Writer
-
-	mu sync.Mutex
-}
-
-func (s *safeWriter) Write(data []byte) (n int, err error) {
-	s.mu.Lock()
-	n, err = s.W.Write(data)
-	s.mu.Unlock()
-	return
 }
