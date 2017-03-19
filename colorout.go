@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/fatih/color"
@@ -54,34 +54,33 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for i, command := range tasks {
-		fmt.Fprintf(stderr, "%d> Running: %s\n", i, command)
+		colorOut := colorize(stdout, i)
+		colorErr := colorize(stderr, i)
+		fmt.Fprintf(colorErr, "%d> Running: %s\n", i, command)
 
 		go func(i int, command string) {
-			defer wg.Done()
-			if err := runCommand(ctx, i, command, stdout, stderr); err != nil {
+			if err := runCommand(ctx, command, colorOut, colorErr); err != nil {
 				fmt.Fprintf(stderr, "%d> command failed with %v\n", i, err)
 				if *fail { // terminate other tasks on failure
 					cancel()
 				}
 			}
+			colorOut.Close()
+			colorErr.Close()
+			wg.Done()
 		}(i, command)
 	}
 	wg.Wait()
 }
 
-func runCommand(ctx context.Context, i int, command string, stdout io.Writer, stderr io.Writer) error {
+func runCommand(ctx context.Context, command string, stdout, stderr io.Writer) error {
 	commandLine := append(shellCommand(), command)
 	cmd := exec.CommandContext(ctx, commandLine[0], commandLine[1:]...)
-
-	cmd.Stdout = colorize(stdout, i)
-	cmd.Stderr = colorize(stderr, i)
-	defer cmd.Stdout.(io.Closer).Close()
-	defer cmd.Stderr.(io.Closer).Close()
-
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-
 	if err := cmd.Wait(); err != nil {
 		return err
 	}
@@ -92,41 +91,52 @@ func shellCommand() []string {
 	return []string{"bash", "-c"}
 }
 
-func colorize(dst io.Writer, i int) io.Writer {
+func colorize(dst io.Writer, i int) io.WriteCloser {
 	return &colorizer{
-		dst: dst,
-		i:   i,
+		W:      dst,
+		Prefix: fmt.Sprintf("%d> ", i),
+		Color:  colors[i],
 	}
 }
 
 type colorizer struct {
-	dst  io.Writer
-	i    int
-	prev string
+	W      io.Writer
+	Prefix string
+	Color  *color.Color
+
+	trailer []byte
 }
 
-func (c *colorizer) Write(data []byte) (n int, err error) {
-	lines := strings.Split(c.prev+string(data), "\n")
-	n = 0
-	for _, line := range lines[:len(lines)-1] {
-		n += len(line) + 1
-		_, err = colors[c.i].Fprintf(c.dst, "%d> %v\n", c.i, line)
-		if err != nil {
-			return n, err
-		}
-	}
-	c.prev = ""
-	if n < len(data) {
-		c.prev = string(data[n:])
-	}
-	n = len(data)
+func (c *colorizer) write(prev, line []byte) (err error) {
+	_, err = c.Color.Fprintf(c.W, "%s%s%s\n", c.Prefix, prev, line)
 	return
 }
 
+// Write writes the contents of p into W with color coding.
+// Each Stream is output with an unique color.
+// If p does not end with a newline, the trailing partial line
+// is buffered and will be output on next write or on Close.
+func (c *colorizer) Write(p []byte) (n int, err error) {
+	n = len(p)
+	for {
+		pos := bytes.IndexByte(p, '\n')
+		if pos == -1 { // incomplete last line
+			c.trailer = append(c.trailer[:0], p...)
+			return
+		}
+		line := p[:pos]
+		if err := c.write(c.trailer, line); err != nil {
+			return n, err
+		}
+		p = p[pos+1:]
+		c.trailer = nil
+	}
+}
+
+// Close writes trailing data not terminated with a newline.
 func (c *colorizer) Close() error {
-	if c.prev != "" {
-		_, err := colors[c.i].Fprintf(c.dst, "%d> %v\n", c.i, c.prev)
-		return err
+	if len(c.trailer) > 0 {
+		return c.write(c.trailer, nil)
 	}
 	return nil
 }
